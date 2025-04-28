@@ -131,12 +131,12 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             loss_a = lam_a * torch.mean(torch.norm(old_mu_batch - mu, dim=1))
             loss_s = lam_s * torch.mean(torch.norm(mu_bar - mu, dim=1))
             smooth_loss = (loss_a + loss_s) / float(mu.shape[1])
-            if torch.rand(1).item() < 0.02:
-                total_loss = (loss_a + loss_s).detach().cpu().item()
-                if total_loss != 0:
-                    loss_a_pct = (loss_a.detach().cpu().item() / total_loss) * 100
-                    loss_s_pct = (loss_s.detach().cpu().item() / total_loss) * 100
-                    print(f"Smooth loss percentages - lam_a component: {loss_a_pct:.2f}%, lam_s component: {loss_s_pct:.2f}%")
+            # if torch.rand(1).item() < 0.02:
+            #     total_loss = (loss_a + loss_s).detach().cpu().item()
+            #     if total_loss != 0:
+            #         loss_a_pct = (loss_a.detach().cpu().item() / total_loss) * 100
+            #         loss_s_pct = (loss_s.detach().cpu().item() / total_loss) * 100
+            #         print(f"Smooth loss percentages - lam_a component: {loss_a_pct:.2f}%, lam_s component: {loss_s_pct:.2f}%")
             a_loss = a_loss
             # --- End smoothness loss computations ---
 
@@ -154,18 +154,18 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             a_loss, smooth_loss, c_loss, entropy, b_loss = losses[0], losses[1], losses[2], losses[3], losses[4]
 
             loss = a_loss + smooth_loss + 0.5 * c_loss * self.critic_coef - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef
-            # Compute percentage for each loss component relative to total loss
-            if torch.rand(1).item() < 0.02:
-                total_loss_val = loss.detach().cpu().item()
-                if total_loss_val != 0:
-                    actor_pct = (a_loss.detach().cpu().item() / total_loss_val) * 100
-                    smooth_pct = (smooth_loss.detach().cpu().item() / total_loss_val) * 100
-                    critic_pct = ((0.5 * c_loss * self.critic_coef).detach().cpu().item() / total_loss_val) * 100
-                    entropy_pct = ((-entropy * self.entropy_coef).detach().cpu().item() / total_loss_val) * 100
-                    bound_pct = ((b_loss * self.bounds_loss_coef).detach().cpu().item() / total_loss_val) * 100
-                    print(f"Loss percentages - Actor: {actor_pct:.2f}%, Smooth: {smooth_pct:.2f}%, Critic: {critic_pct:.2f}%, Entropy: {entropy_pct:.2f}%, Bound: {bound_pct:.2f}%")
-                else:
-                    print("Total loss is zero, cannot compute loss percentages.")
+            # # Compute percentage for each loss component relative to total loss
+            # if torch.rand(1).item() < 0.02:
+            #     total_loss_val = loss.detach().cpu().item()
+            #     if total_loss_val != 0:
+            #         actor_pct = (a_loss.detach().cpu().item() / total_loss_val) * 100
+            #         smooth_pct = (smooth_loss.detach().cpu().item() / total_loss_val) * 100
+            #         critic_pct = ((0.5 * c_loss * self.critic_coef).detach().cpu().item() / total_loss_val) * 100
+            #         entropy_pct = ((-entropy * self.entropy_coef).detach().cpu().item() / total_loss_val) * 100
+            #         bound_pct = ((b_loss * self.bounds_loss_coef).detach().cpu().item() / total_loss_val) * 100
+            #         print(f"Loss percentages - Actor: {actor_pct:.2f}%, Smooth: {smooth_pct:.2f}%, Critic: {critic_pct:.2f}%, Entropy: {entropy_pct:.2f}%, Bound: {bound_pct:.2f}%")
+            #     else:
+            #         print("Total loss is zero, cannot compute loss percentages.")
             
             if self.multi_gpu:
                 self.optimizer.zero_grad()
