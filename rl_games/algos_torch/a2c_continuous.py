@@ -10,20 +10,8 @@ import torch
 
 
 class A2CAgent(a2c_common.ContinuousA2CBase):
-    """Continuous PPO Agent
 
-    The A2CAgent class inerits from the continuous asymmetric actor-critic class and makes modifications for PPO.
-
-    """
     def __init__(self, base_name, params):
-        """Initialise the algorithm with passed params
-
-        Args:
-            base_name (:obj:`str`): Name passed on to the observer and used for checkpoints etc.
-            params (:obj `dict`): Algorithm parameters
-
-        """
-
         a2c_common.ContinuousA2CBase.__init__(self, base_name, params)
         obs_shape = self.obs_shape
         build_config = {
@@ -83,22 +71,10 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
         checkpoint = torch_ext.load_checkpoint(fn)
         self.set_full_state_weights(checkpoint, set_epoch=set_epoch)
 
-    def restore_central_value_function(self, fn):
-        checkpoint = torch_ext.load_checkpoint(fn)
-        self.set_central_value_function_weights(checkpoint)
-
     def get_masked_action_values(self, obs, action_masks):
         assert False
 
     def calc_gradients(self, input_dict):
-        """Compute gradients needed to step the networks of the algorithm.
-
-        Core algo logic is defined here
-
-        Args:
-            input_dict (:obj:`dict`): Algo inputs as a dict.
-
-        """
         value_preds_batch = input_dict['old_values']
         old_action_log_probs_batch = input_dict['old_logp_actions']
         advantage = input_dict['advantages']
@@ -115,7 +91,7 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
         batch_dict = {
             'is_train': True,
             'prev_actions': actions_batch, 
-            'obs' : obs_batch,
+            'obs': obs_batch,
         }
 
         rnn_masks = None
@@ -137,8 +113,35 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
 
             a_loss = self.actor_loss_func(old_action_log_probs_batch, action_log_probs, advantage, self.ppo, curr_e_clip)
 
+            # --- Begin smoothness loss computations ---
+            lam_a = 1.0 # penalize diff between previous and current action
+            lam_s = 1.0 # penalize diff between current action and action with perturbed actions
+            # Compute a slightly perturbed observation and get mu_bar
+            obs_quantile25 = torch.quantile(obs_batch, 0.25, dim=0, keepdim=True)
+            obs_quantile75 = torch.quantile(obs_batch, 0.75, dim=0, keepdim=True)
+            observation_iqr = obs_quantile75 - obs_quantile25
+            obs_with_noise = obs_batch + torch.randn_like(obs_batch) * 0.1 * observation_iqr
+            batch_dict_noise = batch_dict.copy()
+            batch_dict_noise['obs'] = obs_with_noise
+            res_noise = self.model(batch_dict_noise)
+            mu_bar = res_noise['mus']
+
+
+            # Calculate smoothness penalty: higher difference between mu and mu_nxt/mu_bar increases loss
+            loss_a = lam_a * torch.mean(torch.norm(old_mu_batch - mu, dim=1))
+            loss_s = lam_s * torch.mean(torch.norm(mu_bar - mu, dim=1))
+            smooth_loss = (loss_a + loss_s) / float(mu.shape[1])
+            if torch.rand(1).item() < 0.02:
+                total_loss = (loss_a + loss_s).detach().cpu().item()
+                if total_loss != 0:
+                    loss_a_pct = (loss_a.detach().cpu().item() / total_loss) * 100
+                    loss_s_pct = (loss_s.detach().cpu().item() / total_loss) * 100
+                    print(f"Smooth loss percentages - lam_a component: {loss_a_pct:.2f}%, lam_s component: {loss_s_pct:.2f}%")
+            a_loss = a_loss
+            # --- End smoothness loss computations ---
+
             if self.has_value_loss:
-                c_loss = common_losses.critic_loss(self.model,value_preds_batch, values, curr_e_clip, return_batch, self.clip_value)
+                c_loss = common_losses.critic_loss(self.model, value_preds_batch, values, curr_e_clip, return_batch, self.clip_value)
             else:
                 c_loss = torch.zeros(1, device=self.ppo_device)
             if self.bound_loss_type == 'regularisation':
@@ -147,25 +150,28 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
                 b_loss = self.bound_loss(mu)
             else:
                 b_loss = torch.zeros(1, device=self.ppo_device)
-            losses, sum_mask = torch_ext.apply_masks([a_loss.unsqueeze(1), c_loss , entropy.unsqueeze(1), b_loss.unsqueeze(1)], rnn_masks)
-            a_loss, c_loss, entropy, b_loss = losses[0], losses[1], losses[2], losses[3]
+            losses, sum_mask = torch_ext.apply_masks([a_loss.unsqueeze(1), smooth_loss, c_loss, entropy.unsqueeze(1), b_loss.unsqueeze(1)], rnn_masks)
+            a_loss, smooth_loss, c_loss, entropy, b_loss = losses[0], losses[1], losses[2], losses[3], losses[4]
 
-            loss = a_loss + 0.5 * c_loss * self.critic_coef - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef
-            aux_loss = self.model.get_aux_loss()
-            self.aux_loss_dict = {}
-            if aux_loss is not None:
-                for k, v in aux_loss.items():
-                    loss += v
-                    if k in self.aux_loss_dict:
-                        self.aux_loss_dict[k] = v.detach()
-                    else:
-                        self.aux_loss_dict[k] = [v.detach()]
+            loss = a_loss + smooth_loss + 0.5 * c_loss * self.critic_coef - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef
+            # Compute percentage for each loss component relative to total loss
+            if torch.rand(1).item() < 0.02:
+                total_loss_val = loss.detach().cpu().item()
+                if total_loss_val != 0:
+                    actor_pct = (a_loss.detach().cpu().item() / total_loss_val) * 100
+                    smooth_pct = (smooth_loss.detach().cpu().item() / total_loss_val) * 100
+                    critic_pct = ((0.5 * c_loss * self.critic_coef).detach().cpu().item() / total_loss_val) * 100
+                    entropy_pct = ((-entropy * self.entropy_coef).detach().cpu().item() / total_loss_val) * 100
+                    bound_pct = ((b_loss * self.bounds_loss_coef).detach().cpu().item() / total_loss_val) * 100
+                    print(f"Loss percentages - Actor: {actor_pct:.2f}%, Smooth: {smooth_pct:.2f}%, Critic: {critic_pct:.2f}%, Entropy: {entropy_pct:.2f}%, Bound: {bound_pct:.2f}%")
+                else:
+                    print("Total loss is zero, cannot compute loss percentages.")
+            
             if self.multi_gpu:
                 self.optimizer.zero_grad()
             else:
                 for param in self.model.parameters():
                     param.grad = None
-
         self.scaler.scale(loss).backward()
         #TODO: Refactor this ugliest code of they year
         self.trancate_gradients_and_step()
@@ -178,15 +184,15 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
 
         self.diagnostics.mini_batch(self,
         {
-            'values' : value_preds_batch,
-            'returns' : return_batch,
-            'new_neglogp' : action_log_probs,
-            'old_neglogp' : old_action_log_probs_batch,
-            'masks' : rnn_masks
+            'values': value_preds_batch,
+            'returns': return_batch,
+            'new_neglogp': action_log_probs,
+            'old_neglogp': old_action_log_probs_batch,
+            'masks': rnn_masks
         }, curr_e_clip, 0)      
 
-        self.train_result = (a_loss, c_loss, entropy, \
-            kl_dist, self.last_lr, lr_mul, \
+        self.train_result = (a_loss, c_loss, entropy,
+            kl_dist, self.last_lr, lr_mul,
             mu.detach(), sigma.detach(), b_loss)
 
     def train_actor_critic(self, input_dict):
