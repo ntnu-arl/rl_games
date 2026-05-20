@@ -29,6 +29,8 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
         self.init_rnn_from_model(self.model)
         self.last_lr = float(self.last_lr)
         self.bound_loss_type = self.config.get('bound_loss_type', 'bound') # 'regularisation' or 'bound'
+        self.action_smoothness_lam_a = self.config['action_smoothness_lam_a']
+        self.action_smoothness_lam_s = self.config['action_smoothness_lam_s']
         self.optimizer = optim.Adam(self.model.parameters(), float(self.last_lr), eps=1e-08, weight_decay=self.weight_decay)
 
         if self.has_central_value:
@@ -114,8 +116,8 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             a_loss = self.actor_loss_func(old_action_log_probs_batch, action_log_probs, advantage, self.ppo, curr_e_clip)
 
             # --- Begin smoothness loss computations ---
-            lam_a = 1.0 # penalize diff between previous and current action
-            lam_s = 1.0 # penalize diff between current action and action with perturbed actions
+            lam_a = self.action_smoothness_lam_a
+            lam_s = self.action_smoothness_lam_s
             # Compute a slightly perturbed observation and get mu_bar
             obs_quantile25 = torch.quantile(obs_batch, 0.25, dim=0, keepdim=True)
             obs_quantile75 = torch.quantile(obs_batch, 0.75, dim=0, keepdim=True)
@@ -215,5 +217,4 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
         else:
             b_loss = 0
         return b_loss
-
 
