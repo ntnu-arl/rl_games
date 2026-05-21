@@ -28,6 +28,17 @@ from time import sleep
 
 from rl_games.common import common_losses
 
+PRINT_STATS_INTERVAL_SECONDS = 5.0
+_last_print_stats_time = None
+_print_stats_rewards = []
+
+
+def _format_duration(seconds):
+    seconds = int(seconds)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
+
 
 def swap_and_flatten01(arr):
     """
@@ -45,21 +56,27 @@ def rescale_actions(low, high, action):
     return scaled_action
 
 
-def print_statistics(print_stats, curr_frames, step_time, step_inference_time, total_time, epoch_num, max_epochs, frame, max_frames):
-    if print_stats:
-        step_time = max(step_time, 1e-9)
-        fps_step = curr_frames / step_time
-        fps_step_inference = curr_frames / step_inference_time
-        fps_total = curr_frames / total_time
+def print_statistics(print_stats, curr_frames, fps_time, elapsed_time, epoch_num, max_epochs, frame, mean_reward):
+    global _last_print_stats_time
+    global _print_stats_rewards
 
-        if max_epochs == -1 and max_frames == -1:
-            print(f'fps step: {fps_step:.0f} fps step and policy inference: {fps_step_inference:.0f} fps total: {fps_total:.0f} epoch: {epoch_num:.0f} frames: {frame:.0f}')
-        elif max_epochs == -1:
-            print(f'fps step: {fps_step:.0f} fps step and policy inference: {fps_step_inference:.0f} fps total: {fps_total:.0f} epoch: {epoch_num:.0f} frames: {frame:.0f}/{max_frames:.0f}')
-        elif max_frames == -1:
-            print(f'fps step: {fps_step:.0f} fps step and policy inference: {fps_step_inference:.0f} fps total: {fps_total:.0f} epoch: {epoch_num:.0f}/{max_epochs:.0f} frames: {frame:.0f}')
-        else:
-            print(f'fps step: {fps_step:.0f} fps step and policy inference: {fps_step_inference:.0f} fps total: {fps_total:.0f} epoch: {epoch_num:.0f}/{max_epochs:.0f} frames: {frame:.0f}/{max_frames:.0f}')
+    if print_stats:
+        _print_stats_rewards.append(mean_reward)
+
+        current_time = time.perf_counter()
+        if _last_print_stats_time is not None and current_time - _last_print_stats_time < PRINT_STATS_INTERVAL_SECONDS:
+            return
+
+        _last_print_stats_time = current_time
+        fps_total = curr_frames / fps_time
+        percent_done = 100.0 * epoch_num / max_epochs
+        estimated_total_time = elapsed_time * max_epochs / epoch_num
+        estimated_time_left = estimated_total_time - elapsed_time
+        median_reward = np.median(_print_stats_rewards)
+        _print_stats_rewards = []
+        epoch_width = len(str(int(max_epochs)))
+
+        print(f'progress {percent_done:6.2f}% | epoch {epoch_num:{epoch_width}.0f}/{max_epochs:.0f} | reward median {median_reward:7.1f} | fps {fps_total:8.0f} | eta {_format_duration(estimated_time_left)} | frames {frame:12.0f}')
 
 
 class A2CBase(BaseAlgorithm):
@@ -1116,9 +1133,6 @@ class DiscreteA2CBase(A2CBase):
 
                 frame = self.frame // self.num_agents
 
-                print_statistics(self.print_stats, curr_frames, step_time, scaled_play_time, scaled_time, 
-                                epoch_num, self.max_epochs, frame, self.max_frames)
-
                 self.write_stats(total_time, epoch_num, step_time, play_time, update_time,
                                 a_losses, c_losses, entropies, kls, last_lr, lr_mul, frame, 
                                 scaled_time, scaled_play_time, curr_frames)
@@ -1130,6 +1144,9 @@ class DiscreteA2CBase(A2CBase):
                     mean_shaped_rewards = self.game_shaped_rewards.get_mean()
                     mean_lengths = self.game_lengths.get_mean()
                     self.mean_rewards = mean_rewards[0]
+
+                    print_statistics(self.print_stats, curr_frames, scaled_time, total_time,
+                                    epoch_num, self.max_epochs, frame, mean_rewards[0])
 
                     for i in range(self.value_size):
                         rewards_name = 'rewards' if i == 0 else 'rewards{0}'.format(i)
@@ -1458,9 +1475,6 @@ class ContinuousA2CBase(A2CBase):
                 curr_frames = self.curr_frames * self.world_size if self.multi_gpu else self.curr_frames
                 self.frame += curr_frames
 
-                print_statistics(self.print_stats, curr_frames, step_time, scaled_play_time, scaled_time, 
-                                epoch_num, self.max_epochs, frame, self.max_frames)
-
                 self.write_stats(total_time, epoch_num, step_time, play_time, update_time,
                                 a_losses, c_losses, entropies, kls, last_lr, lr_mul, frame,
                                 scaled_time, scaled_play_time, curr_frames)
@@ -1473,6 +1487,9 @@ class ContinuousA2CBase(A2CBase):
                     mean_shaped_rewards = self.game_shaped_rewards.get_mean()
                     mean_lengths = self.game_lengths.get_mean()
                     self.mean_rewards = mean_rewards[0]
+
+                    print_statistics(self.print_stats, curr_frames, scaled_time, total_time,
+                                    epoch_num, self.max_epochs, frame, mean_rewards[0])
 
                     for i in range(self.value_size):
                         rewards_name = 'rewards' if i == 0 else 'rewards{0}'.format(i)
